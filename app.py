@@ -1,5 +1,4 @@
 import streamlit as st
-import psycopg2
 
 # --- Database connection ---
 conn = st.connection("neon", type="sql")
@@ -17,21 +16,30 @@ user_name = st.user.name
 
 st.title(f"Welcome, {user_name}! 👋")
 
-# --- Register user if new ---
-# --- Register user if new ---
+# --- Register user if new (INSERT must use session, not query) ---
 try:
-    conn.query("INSERT INTO users (email, name) VALUES (:email, :name) ON CONFLICT (email) DO NOTHING;",params={"email": user_email, "name": user_name},ttl=0)
+    with conn.session as session:
+        session.execute(
+            "INSERT INTO users (email, name) VALUES (:email, :name) ON CONFLICT (email) DO NOTHING;",
+            {"email": user_email, "name": user_name}
+        )
+        session.commit()
 except Exception as e:
     st.error(f"Insert error: {e}")
 
-# --- Get user ID (with a safety check) ---
-user_df = conn.query("SELECT id FROM users WHERE email = :email;",params={"email": user_email},ttl=0)
+# --- Get user ID ---
+user_df = conn.query(
+    "SELECT id FROM users WHERE email = :email;",
+    params={"email": user_email},
+    ttl=0
+)
 
 if user_df.empty:
     st.error("User was not found in the database after insert. Check your Neon connection and permissions.")
     st.stop()
 
 user_id = int(user_df.iloc[0]['id'])
+
 # --- Load available topics (global + user's custom) ---
 topics_df = conn.query(
     """
@@ -41,7 +49,8 @@ topics_df = conn.query(
       AND (created_by IS NULL OR created_by = :uid)
     ORDER BY category, name;
     """,
-    params={"uid": user_id}
+    params={"uid": user_id},
+    ttl=0
 )
 
 # --- Get user's current subscriptions ---
@@ -52,7 +61,8 @@ current_df = conn.query(
     JOIN topics t ON ut.topic_id = t.id
     WHERE ut.user_id = :uid;
     """,
-    params={"uid": user_id}
+    params={"uid": user_id},
+    ttl=0
 )
 
 current_topic_ids = current_df['topic_id'].tolist() if not current_df.empty else []
@@ -67,17 +77,17 @@ selected_topics = []
 for category in categories:
     cat_topics = topics_df[topics_df['category'] == category]
     options = {row['name']: row['id'] for _, row in cat_topics.iterrows()}
-    
+
     # Pre-select current topics in this category
     default = [name for name, tid in options.items() if tid in current_topic_ids]
-    
+
     chosen = st.multiselect(
         f"{category}",
         options=list(options.keys()),
         default=default,
         key=f"cat_{category}"
     )
-    
+
     for name in chosen:
         selected_topics.append({
             'topic_id': options[name],
@@ -90,18 +100,23 @@ st.subheader("Create a Custom Topic")
 with st.form("custom_topic"):
     new_topic_name = st.text_input("Topic name (e.g., 'Quantum Computing')")
     submitted = st.form_submit_button("Add Topic")
-    
+
     if submitted and new_topic_name:
-        # Insert into topics if it doesn't exist
-        conn.query(
-            """
-            INSERT INTO topics (name, category, created_by)
-            VALUES (:name, 'Custom', :uid)
-            ON CONFLICT (name) DO NOTHING;
-            """,
-            params={"name": new_topic_name, "uid": user_id},
-            ttl=0
-        )
+        # Insert into topics if it doesn't exist (use session for INSERT)
+        try:
+            with conn.session as session:
+                session.execute(
+                    """
+                    INSERT INTO topics (name, category, created_by)
+                    VALUES (:name, 'Custom', :uid)
+                    ON CONFLICT (name) DO NOTHING;
+                    """,
+                    {"name": new_topic_name, "uid": user_id}
+                )
+                session.commit()
+        except Exception as e:
+            st.error(f"Could not create topic: {e}")
+
         # Fetch the topic ID (whether it was just created or already existed)
         topic_row = conn.query(
             "SELECT id FROM topics WHERE name = :name;",
@@ -128,7 +143,7 @@ for topic in selected_topics:
     # Check if user already has a priority for this topic
     existing = current_df[current_df['topic_id'] == topic['topic_id']]
     current_priority = int(existing.iloc[0]['priority']) if not existing.empty else 3
-    
+
     topic_priorities[topic['topic_id']] = st.slider(
         f"{topic['name']}",
         min_value=1,
@@ -147,29 +162,32 @@ delivery = st.radio(
 
 # --- Save button ---
 if st.button("💾 Save Preferences", type="primary"):
-    with conn.session as session:
-        # Remove old subscriptions
-        session.execute(
-            "DELETE FROM user_topics WHERE user_id = :uid;",
-            {"uid": user_id}
-        )
-        # Insert new subscriptions
-        for topic in selected_topics:
+    try:
+        with conn.session as session:
+            # Remove old subscriptions
             session.execute(
-                """
-                INSERT INTO user_topics (user_id, topic_id, delivery_method, priority)
-                VALUES (:uid, :tid, :method, :prio);
-                """,
-                {
-                    "uid": user_id,
-                    "tid": topic['topic_id'],
-                    "method": delivery,
-                    "prio": topic_priorities[topic['topic_id']]
-                }
+                "DELETE FROM user_topics WHERE user_id = :uid;",
+                {"uid": user_id}
             )
-        session.commit()
-    st.success("✅ Preferences saved!")
-    st.rerun()
+            # Insert new subscriptions
+            for topic in selected_topics:
+                session.execute(
+                    """
+                    INSERT INTO user_topics (user_id, topic_id, delivery_method, priority)
+                    VALUES (:uid, :tid, :method, :prio);
+                    """,
+                    {
+                        "uid": user_id,
+                        "tid": topic['topic_id'],
+                        "method": delivery,
+                        "prio": topic_priorities[topic['topic_id']]
+                    }
+                )
+            session.commit()
+        st.success("✅ Preferences saved!")
+        st.rerun()
+    except Exception as e:
+        st.error(f"Save failed: {e}")
 
 # --- In-App News Display ---
 st.subheader("📰 Today's News")
@@ -183,7 +201,8 @@ news_df = conn.query(
     WHERE ut.user_id = :uid AND n.id IS NOT NULL
     ORDER BY ut.priority ASC, t.name;
     """,
-    params={"uid": user_id}
+    params={"uid": user_id},
+    ttl=0
 )
 
 if news_df.empty:
