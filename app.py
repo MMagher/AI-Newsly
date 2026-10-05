@@ -18,19 +18,20 @@ user_name = st.user.name
 st.title(f"Welcome, {user_name}! 👋")
 
 # --- Register user if new ---
+# --- Register user if new ---
 try:
-    conn.query(
-        "INSERT INTO users (email, name) VALUES (:email, :name) ON CONFLICT (email) DO NOTHING;",
-        params={"email": user_email, "name": user_name},
-        ttl=0
-    )
+    conn.query("INSERT INTO users (email, name) VALUES (:email, :name) ON CONFLICT (email) DO NOTHING;",params={"email": user_email, "name": user_name},ttl=0)
 except Exception as e:
-    st.error(f"Database error: {e}")
+    st.error(f"Insert error: {e}")
 
-# --- Get user ID ---
-user_df = conn.query("SELECT id FROM users WHERE email = :email;", params={"email": user_email})
+# --- Get user ID (with a safety check) ---
+user_df = conn.query("SELECT id FROM users WHERE email = :email;",params={"email": user_email},ttl=0)
+
+if user_df.empty:
+    st.error("User was not found in the database after insert. Check your Neon connection and permissions.")
+    st.stop()
+
 user_id = int(user_df.iloc[0]['id'])
-
 # --- Load available topics (global + user's custom) ---
 topics_df = conn.query(
     """
