@@ -1,4 +1,5 @@
 import streamlit as st
+from sqlalchemy import text
 
 # --- Database connection ---
 conn = st.connection("neon", type="sql")
@@ -20,7 +21,7 @@ st.title(f"Welcome, {user_name}! 👋")
 try:
     with conn.session as session:
         session.execute(
-            "INSERT INTO users (email, name) VALUES (:email, :name) ON CONFLICT (email) DO NOTHING;",
+            text("INSERT INTO users (email, name) VALUES (:email, :name) ON CONFLICT (email) DO NOTHING;"),
             {"email": user_email, "name": user_name}
         )
         session.commit()
@@ -106,11 +107,11 @@ with st.form("custom_topic"):
         try:
             with conn.session as session:
                 session.execute(
-                    """
-                    INSERT INTO topics (name, category, created_by)
-                    VALUES (:name, 'Custom', :uid)
-                    ON CONFLICT (name) DO NOTHING;
-                    """,
+                    text("""
+                        INSERT INTO topics (name, category, created_by)
+                        VALUES (:name, 'Custom', :uid)
+                        ON CONFLICT (name) DO NOTHING;
+                    """),
                     {"name": new_topic_name, "uid": user_id}
                 )
                 session.commit()
@@ -166,16 +167,16 @@ if st.button("💾 Save Preferences", type="primary"):
         with conn.session as session:
             # Remove old subscriptions
             session.execute(
-                "DELETE FROM user_topics WHERE user_id = :uid;",
+                text("DELETE FROM user_topics WHERE user_id = :uid;"),
                 {"uid": user_id}
             )
             # Insert new subscriptions
             for topic in selected_topics:
                 session.execute(
-                    """
-                    INSERT INTO user_topics (user_id, topic_id, delivery_method, priority)
-                    VALUES (:uid, :tid, :method, :prio);
-                    """,
+                    text("""
+                        INSERT INTO user_topics (user_id, topic_id, delivery_method, priority)
+                        VALUES (:uid, :tid, :method, :prio);
+                    """),
                     {
                         "uid": user_id,
                         "tid": topic['topic_id'],
