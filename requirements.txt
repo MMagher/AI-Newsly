@@ -6,4 +6,5 @@ sqlalchemy>=2.0.0
 openai>=1.0.0
 brevo-python
 python-dotenv
-pygooglenews
+feedparser
+requests

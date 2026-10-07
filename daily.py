@@ -1,10 +1,12 @@
 import os
 import time
 import psycopg2
+import feedparser
+import urllib.parse
+import requests
 from openai import OpenAI
 from brevo import Brevo
 from brevo.transactional_emails import SendTransacEmailRequestSender, SendTransacEmailRequestToItem
-from pygooglenews import GoogleNews
 from datetime import datetime
 from dotenv import load_dotenv
 
@@ -20,26 +22,46 @@ FROM_NAME = os.environ.get("FROM_NAME", "News Digest")
 # --- Clients ---
 deepseek = OpenAI(api_key=DEEPSEEK_API_KEY, base_url="https://api.deepseek.com")
 brevo = Brevo(api_key=BREVO_API_KEY)
-gn = GoogleNews()
+
 
 def get_db():
     return psycopg2.connect(DATABASE_URL)
 
+
 def fetch_news_for_topic(topic_name):
-    """Fetch last 24h articles from Google News RSS."""
+    """Fetch last 24h articles from Google News RSS directly."""
     try:
-        result = gn.search(topic_name, when='24h')
+        # URL-encode the topic for the query string
+        query = urllib.parse.quote_plus(topic_name)
+
+        # Google News RSS search URL with 'when:24h' filter
+        url = f"https://news.google.com/rss/search?q={query}+when:24h&hl=en-US&gl=US&ceid=US:en"
+
+        # Add a user-agent to avoid 429 rate limits
+        headers = {
+            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'
+        }
+
+        response = requests.get(url, headers=headers, timeout=10)
+        response.raise_for_status()
+
+        feed = feedparser.parse(response.content)
+
         articles = []
-        for entry in result['entries'][:10]:
+        for entry in feed.entries[:10]:
             articles.append({
                 'title': entry.title,
                 'url': entry.link,
-                'snippet': entry.summary[:500]
+                'snippet': entry.summary[:500] if hasattr(entry, 'summary') else ''
             })
+
+        print(f"  Found {len(articles)} articles for '{topic_name}'")
         return articles
+
     except Exception as e:
         print(f"News fetch failed for {topic_name}: {e}")
         return []
+
 
 def generate_email(user_name, topics_with_articles):
     """Use DeepSeek to write a personalized digest."""
@@ -54,7 +76,10 @@ def generate_email(user_name, topics_with_articles):
         messages=[
             {
                 "role": "system",
-                "content": "You are a concise news digest writer. Write a friendly email summary using bullet points. Include links in markdown format. Keep it under 400 words."
+                "content": (
+                    "You are a concise news digest writer. Write a friendly email summary "
+                    "using bullet points. Include links in markdown format. Keep it under 400 words."
+                )
             },
             {
                 "role": "user",
@@ -65,6 +90,7 @@ def generate_email(user_name, topics_with_articles):
         temperature=0.7
     )
     return response.choices[0].message.content
+
 
 def send_email(to_email, subject, html_content):
     """Send via Brevo."""
@@ -79,6 +105,7 @@ def send_email(to_email, subject, html_content):
     except Exception as e:
         print(f"Email failed for {to_email}: {e}")
         return False
+
 
 def main():
     print(f"Starting job at {datetime.utcnow()}")
@@ -99,7 +126,7 @@ def main():
         print(f"Fetching: {topic_name}")
         articles = fetch_news_for_topic(topic_name)
         articles_by_topic[topic_id] = articles
-        
+
         # Save to news_cache for in-app users
         for a in articles:
             cur.execute(
@@ -114,7 +141,7 @@ def main():
 
     # 3. Get users who want EMAIL delivery, ordered by priority
     cur.execute("""
-        SELECT u.id, u.email, u.name, 
+        SELECT u.id, u.email, u.name,
                array_agg(t.id ORDER BY ut.priority) as topic_ids,
                array_agg(ut.priority ORDER BY ut.priority) as priorities
         FROM users u
@@ -139,11 +166,10 @@ def main():
         # Build topic->articles map, respecting priority (lower = more articles)
         user_topics = {}
         max_articles_map = {1: 6, 2: 5, 3: 3, 4: 2, 5: 1}
-        
+
         for tid, prio in zip(topic_ids, priorities):
             topic_name = next(t[1] for t in all_topics if t[0] == tid)
             articles = articles_by_topic.get(tid, [])
-            # Limit by priority
             limit = max_articles_map.get(prio, 3)
             user_topics[topic_name] = articles[:limit]
 
@@ -168,6 +194,7 @@ def main():
     cur.close()
     conn.close()
     print("Done.")
+
 
 if __name__ == "__main__":
     main()
