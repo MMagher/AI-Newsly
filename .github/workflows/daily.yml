@@ -25,4 +25,4 @@ jobs:
           DEEPSEEK_API_KEY: ${{ secrets.DEEPSEEK_API_KEY }}
           BREVO_API_KEY: ${{ secrets.BREVO_API_KEY }}
           FROM_EMAIL: ${{ secrets.FROM_EMAIL }}
-        run: python daily_job.py
+        run: python daily.py
