@@ -9,6 +9,8 @@ from brevo import Brevo
 from brevo.transactional_emails import SendTransacEmailRequestSender, SendTransacEmailRequestToItem
 from datetime import datetime
 from dotenv import load_dotenv
+from gnews_decoder import from_rss
+
 
 load_dotenv()
 
@@ -29,40 +31,20 @@ def get_db():
 
 
 def fetch_news_for_topic(topic_name):
-    """Fetch last 24h articles from Google News RSS directly."""
+    """Fetch last 24h articles with resolved publisher URLs."""
     try:
-        # URL-encode the topic for the query string
-        query = urllib.parse.quote_plus(topic_name)
-
-        # Google News RSS search URL with 'when:24h' filter
-        url = f"https://news.google.com/rss/search?q={query}+when:24h&hl=en-US&gl=US&ceid=US:en"
-
-        # Add a user-agent to avoid 429 rate limits
-        headers = {
-            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'
-        }
-
-        response = requests.get(url, headers=headers, timeout=10)
-        response.raise_for_status()
-
-        feed = feedparser.parse(response.content)
-
         articles = []
-        for entry in feed.entries[:10]:
+        for item in from_rss(topic_name, limit=10):
             articles.append({
-                'title': entry.title,
-                'url': entry.link,
-                'snippet': entry.summary[:500] if hasattr(entry, 'summary') else ''
+                'title': item['title'],
+                'url': item['url'],  # Resolved publisher URL, not news.google.com
+                'snippet': item.get('summary', '')[:500]
             })
-
         print(f"  Found {len(articles)} articles for '{topic_name}'")
         return articles
-
     except Exception as e:
         print(f"News fetch failed for {topic_name}: {e}")
         return []
-
-
 def generate_email(user_name, topics_with_articles):
     """Use DeepSeek to write a personalized digest."""
     articles_text = ""

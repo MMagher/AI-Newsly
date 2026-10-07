@@ -193,25 +193,27 @@ delivery = st.radio(
 # --- Save button ---
 if st.button("💾 Save Preferences", type="primary"):
     try:
-        # Delete old subscriptions first
-        run_write_with_retry(
-            "DELETE FROM user_topics WHERE user_id = :uid;",
-            {"uid": user_id}
-        )
-        # Insert new subscriptions
-        for topic in selected_topics:
-            run_write_with_retry(
-                """
-                INSERT INTO user_topics (user_id, topic_id, delivery_method, priority)
-                VALUES (:uid, :tid, :method, :prio);
-                """,
-                {
-                    "uid": user_id,
-                    "tid": topic['topic_id'],
-                    "method": delivery,
-                    "prio": topic_priorities[topic['topic_id']]
-                }
+        # All operations in ONE session, ONE commit
+        with conn.session as session:
+            session.execute(
+                text("DELETE FROM user_topics WHERE user_id = :uid;"),
+                {"uid": user_id}
             )
+            for topic in selected_topics:
+                session.execute(
+                    text("""
+                        INSERT INTO user_topics (user_id, topic_id, delivery_method, priority)
+                        VALUES (:uid, :tid, :method, :prio);
+                    """),
+                    {
+                        "uid": user_id,
+                        "tid": topic['topic_id'],
+                        "method": delivery,
+                        "prio": topic_priorities[topic['topic_id']]
+                    }
+                )
+            session.commit()
+
         st.success("✅ Preferences saved!")
         st.rerun()
     except Exception as e:
